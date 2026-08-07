@@ -5715,61 +5715,38 @@ function updateDepositAddress(method) {
             
             try {
                 showLoading();
-   // ✅ আল্ট্রা স্মার্ট ডিভাইস লক চেক শুরু (With Custom Device Limit)
+   // 🛡️ ডিভাইস প্রোটেকশন ইঞ্জিন (Toast Version & Auto-Reset on Delete)
             let deviceToken = localStorage.getItem('TAKAWALA_device_id');
-            if (!deviceToken) {
-                deviceToken = 'ID-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+            
+            // যদি ব্রাউজারে টোকেন না থাকে, তবেই নতুন তৈরি হবে
+            if (!deviceToken || deviceToken === "null" || deviceToken.length < 5) {
+                deviceToken = 'ID-' + Math.random().toString(36).substr(2, 8).toUpperCase() + '-' + Date.now();
                 localStorage.setItem('TAKAWALA_device_id', deviceToken);
             }
 
-            // ১. ডিফল্ট গ্লোবাল লিমিট আনা
+            // ১. এডমিন সেটিংস থেকে একাউন্ট লিমিট আনা (ডিফল্ট ১)
             let allowedAccounts = 1;
             try {
                 const configDoc = await db.collection("settings").doc("appConfig").get();
-                if (configDoc.exists && configDoc.data().maxAccountsPerDevice) {
-                    // 🔥 ফিক্স: String কে Number এ কনভার্ট করা হলো 
-                    allowedAccounts = parseInt(configDoc.data().maxAccountsPerDevice) || 1;
+                if (configDoc.exists) {
+                    const dbLimit = parseInt(configDoc.data().maxAccountsPerDevice);
+                    if (!isNaN(dbLimit) && dbLimit > 0) allowedAccounts = dbLimit;
                 }
-            } catch(e) { console.log("Global Limit Error"); }
+            } catch(e) { console.log("Config skip"); }
 
-            // ২. কাস্টম লিমিট চেক করা (ম্যাজিক লজিক ✨)
-            try {
-                const customLimitDoc = await db.collection("device_limits").doc(deviceToken).get();
-                if (customLimitDoc.exists && customLimitDoc.data().limit) {
-                    // 🔥 ফিক্স: String কে Number এ কনভার্ট করা হলো 
-                    allowedAccounts = parseInt(customLimitDoc.data().limit) || allowedAccounts;
-                }
-            } catch(e) { console.log("Custom Limit Error"); }
-            // ৩. ডিভাইস টোকেন দিয়ে গোনা
-            const checkDevice = await db.collection("users").where("deviceToken", "==", deviceToken).get();
-            
-            if (checkDevice.size >= allowedAccounts) {
+            // ২. বর্তমানে এই ডিভাইসে কয়টি একাউন্ট "সক্রিয়" আছে তা চেক করা
+            // ইউজার ডিলিট করলে এই কুয়েরি অটোমেটিক তাকে বাদ দিয়ে গননা করবে
+            const activeAccounts = await db.collection("users")
+                .where("deviceToken", "==", deviceToken)
+                .get();
+
+            // ৩. যাচাইকরণ এবং টোস্ট মেসেজ প্রদর্শন
+            if (!activeAccounts.empty && activeAccounts.size >= allowedAccounts) {
                 hideLoading();
-                
-                Swal.fire({
-                    title: '<span style="color:#ef4444; font-weight:900;">অ্যাক্সেস লিমিট! 🚫</span>',
-                    html: `
-                        <div style="background: #fef2f2; border: 1px dashed #fca5a5; padding: 15px; border-radius: 15px; margin-top: 10px;">
-                            <div style="font-size: 40px; margin-bottom: 10px;">📱</div>
-                            <p style="color: #991b1b; font-size: 14px; font-weight: 700; line-height: 1.6;">
-                                এই ডিভাইসটির জন্য সর্বোচ্চ <span style="background:#ef4444; color:white; padding:2px 8px; border-radius:5px;">${allowedAccounts} টি</span> একাউন্ট খোলার অনুমতি রয়েছে।
-                            </p>
-                            <p style="color: #7f1d1d; font-size: 12px; font-weight: 500; margin-top: 10px;">
-                                আপনি ইতিমধ্যে আপনার লিমিট পার করে ফেলেছেন। দয়া করে আপনার আগের একাউন্টটি লগইন করুন অথবা এডমিনের সাথে যোগাযোগ করুন।
-                            </p>
-                        </div>
-                    `,
-                    showConfirmButton: true,
-                    confirmButtonText: '<i class="ri-login-circle-line"></i> লগইন পেজে যান',
-                    confirmButtonColor: '#ef4444',
-                    background: '#ffffff',
-                    customClass: { popup: 'rounded-[30px] border-2 border-red-100 shadow-2xl' }
-                }).then(() => {
-                    window.toggleAuthTab('login');
-                });
-                return;
+                showSmartToast(`দুঃখিত! এই মোবাইলে ইতিমধ্যে ${activeAccounts.size}টি একাউন্ট আছে। আপনি আর একাউন্ট খুলতে পারবেন না।`, 'error');
+                return; // রেজিস্ট্রেশন প্রসেস থামিয়ে দিবে
             }
-            // ✅ ডিভাইস লক চেক শেষ
+            // 🛡️ ডিভাইস প্রোটেকশন চেক শেষ
 
     showSmartToast('একাউন্ট তৈরি হচ্ছে...', 'info');
                 const uc = await auth.createUserWithEmailAndPassword(email, pass);
@@ -6470,6 +6447,11 @@ function renderTasks() {
                         const t = doc.data();
                         const taskId = doc.id;
                         
+                        // 🛡️ প্রমোশন লিমিট চেক: টার্গেট পূর্ণ হলে টাস্ক গায়েব হয়ে যাবে
+                        if (t.targetQuantity && (t.completedCount || 0) >= t.targetQuantity) {
+                            return; 
+                        }
+
                         const tPlans = (t.allowedPlans ||[]).map(p => p.toLowerCase());
                         const isAllowed = tPlans.includes('all') || tPlans.some(p => p.includes(uKey));
                         
@@ -6481,25 +6463,11 @@ function renderTasks() {
                         }
 
                         if (shouldShow) {
-                            let isCompleted = false;
-                            const taskTypeLower = (t.taskType || "daily").toLowerCase();
+                            // 🔒 আজীবনের জন্য লক: ইউজার একবার করলেই চিরতরে হাইড
+                            let isCompleted = (t.completedBy && Array.isArray(t.completedBy) && t.completedBy.includes(currentUserId));
 
-                            // ১. আজকে এই টাস্কটি করা হয়েছে কি না (যেকোনো টাইপের টাস্ক হোক না কেন, আজকে করলে হাইড হবে)
-                            if (doneToday.has(taskId)) {
-                                isCompleted = true;
-                            }
-
-                            // ২. ওয়ান-টাইম (জীবনে একবার) হলে completedBy চেক করবে
-                            if (taskTypeLower.includes('one') || taskTypeLower.includes('একবার') || taskTypeLower.includes('lifetime')) {
-                                if (t.completedBy && Array.isArray(t.completedBy) && t.completedBy.includes(currentUserId)) {
-                                    isCompleted = true;
-                                }
-                            }
-
-                            // যদি কমপ্লিট না হয়ে থাকে তবেই দেখাবো
                             if (!isCompleted) {
-                                hasTask = true;
-
+                                hasTask = true; 
                                 
 // ✨ SMART ICON DETECTOR (FIXED FOR REDIRECT LINKS)
                                 let icon = 'ri-global-line', iconColor = 'from-slate-500 to-slate-700'; 
@@ -7716,6 +7684,12 @@ window.submitWebsiteProofDirectly = async () => {
             todayEarnings: firebase.firestore.FieldValue.increment(currentTaskInfo.reward)
         });
 
+// 🛡️ ইউজারকে চিরতরে এই টাস্ক থেকে ব্লক করে দেওয়া
+        await db.collection("tasks").doc(currentTaskInfo.taskId).update({
+            completedCount: firebase.firestore.FieldValue.increment(1),
+            completedBy: firebase.firestore.FieldValue.arrayUnion(currentUserId)
+        });
+
         // ২. অটো-সাকসেস হিসেবে সাবমিশন সেভ করা
         await newReqRef.set({
             userId: currentUserId,
@@ -7842,6 +7816,11 @@ window.submitProof = async () => {
 
         // ২. সাবমিশনে সেভ করা
         await newReqRef.set(submissionData);
+        
+       // 🛡️ ইউজারকে চিরতরে এই টাস্ক থেকে মেমোরি লক করে দেওয়া
+        await db.collection("tasks").doc(currentTaskInfo.taskId).update({
+            completedBy: firebase.firestore.FieldValue.arrayUnion(currentUserId)
+        });
         
         // ৩. একই আইডি দিয়ে ইউজারের হিস্ট্রিতে সেভ করা
         await db.collection("history").doc(newReqId).set({
@@ -9113,46 +9092,139 @@ window.watchAdForSpin = async () => {
     });
 };
 
-// ✅ 6. BUY SPIN PACKAGES
-window.buySpins = async (count, price) => {
-    if (currentUserData.mainBalance < price) {
-        showSmartToast('আপনার ব্যালেন্স নেই! মেইন ব্যালেন্সে টাকা জমা করুন।', 'error');
-        return;
+// 🎡 ULTRA PREMIUM AUTO-INJECTING SPIN CHECKOUT MODULE
+window.currentSpinOrder = null;
+
+window.buySpins = function(count, price) {
+    if (!currentUserData) return;
+    window.currentSpinOrder = { count, price };
+    const currentBalance = parseFloat(currentUserData.mainBalance) || 0;
+
+    let modal = document.getElementById('spinCheckoutModal');
+
+    // 🚀 ১. অটো-ইনজেকশন লজিক (যদি এইচটিএমএল না থাকে, তবে জাভাস্ক্রিপ্ট নিজেই তৈরি করবে)
+    if (!modal) {
+        const modalHTML = `
+        <div id="spinCheckoutModal" class="hidden fixed inset-0 z-[999999] flex flex-col items-center justify-end transition-all duration-300">
+            <div class="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onclick="window.closeSpinCheckout()"></div>
+            <div class="bg-white w-full max-w-md rounded-t-[35px] shadow-2xl p-6 relative z-10 animate__animated animate__slideInUp duration-300 overflow-hidden max-h-[90vh] overflow-y-auto">
+                <div class="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-5"></div>
+                <div class="text-center mb-5">
+                    <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center text-white text-3xl mx-auto mb-2.5 shadow-lg border-2 border-white animate-spin-slow">
+                        <i class="ri-refresh-line"></i>
+                    </div>
+                    <h3 class="text-xl font-black text-slate-800">স্পিন প্যাক ক্রয়</h3>
+                    <p class="text-[11px] text-slate-400 font-bold tracking-wide mt-1 uppercase">Lucky Spin Bundle Pack</p>
+                </div>
+                <div class="bg-slate-50 border border-slate-100 rounded-3xl p-5 space-y-3.5 mb-5 shadow-inner">
+                    <div class="flex items-center gap-2.5 pb-3 border-b border-dashed border-slate-200">
+                        <img id="spinCheckoutUserAvatar" src="https://img.icons8.com/fluency/96/user-male-circle.png" class="w-8 h-8 rounded-full border border-slate-200">
+                        <p class="text-xs font-bold text-slate-600">ক্রেতা: <span id="spinCheckoutUserName" class="text-slate-800 font-black">---</span></p>
+                    </div>
+                    <div class="flex justify-between items-center text-xs">
+                        <span class="text-slate-500 font-bold">স্পিন সংখ্যা</span>
+                        <span id="spinCheckoutQty" class="font-black text-indigo-700 bg-indigo-100 px-2.5 py-0.5 rounded text-[10px]">-- টি</span>
+                    </div>
+                    <div class="flex justify-between items-center pt-3 border-t border-dashed border-slate-200">
+                        <span class="text-slate-800 font-black text-sm">মূল্য (মেইন ব্যালেন্স)</span>
+                        <span id="spinCheckoutPrice" class="font-black text-2xl text-indigo-600">৳০.০০</span>
+                    </div>
+                </div>
+                <div class="bg-indigo-50/50 border border-indigo-100 p-4 rounded-2xl mb-5">
+                    <div class="flex justify-between items-center">
+                        <div class="flex items-center gap-2">
+                            <div class="w-6 h-6 bg-indigo-500 text-white rounded-lg flex items-center justify-center text-sm shadow-sm"><i class="ri-wallet-3-fill"></i></div>
+                            <span class="text-xs font-bold text-slate-600">আপনার মেইন ব্যালেন্স</span>
+                        </div>
+                        <span id="spinCheckoutUserBalance" class="font-black text-slate-800 text-sm">৳০.০০</span>
+                    </div>
+                </div>
+                <div id="spinCheckoutWarningBox" class="hidden bg-rose-50 border border-rose-100 p-3.5 rounded-2xl mb-5 flex items-start gap-2.5 animate__animated animate__shakeX">
+                    <i class="ri-error-warning-fill text-rose-500 text-lg shrink-0 mt-0.5"></i>
+                    <div class="text-left text-[11px] font-bold text-rose-700 leading-normal">
+                        দুঃখিত মামা, আপনার ব্যালেন্স পর্যাপ্ত নয়! প্যাকটি কিনতে মেইন ব্যালেন্সে টাকা থাকতে হবে।
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <button id="spinConfirmBuyBtn" onclick="window.confirmSpinPurchase()" class="w-full bg-gradient-to-r from-indigo-600 to-purple-700 text-white font-black py-4 rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 text-sm uppercase tracking-wider">
+                        <i class="ri-checkbox-circle-fill text-lg animate-pulse"></i> এখনই কিনুন 🚀
+                    </button>
+                    <button onclick="window.closeSpinCheckout()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-3.5 rounded-2xl text-xs transition-all">
+                        বাতিল করুন
+                    </button>
+                </div>
+            </div>
+        </div>`;
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        modal = document.getElementById('spinCheckoutModal');
     }
-    
-    const res = await Swal.fire({
-        title: 'স্পিন প্যাকেজ কিনবেন?',
-        html: `৳<b>${price}</b> টাকায় <b>${count}টি</b> স্পিন পাবেন।`,
-        showCancelButton: true,
-        confirmButtonText: 'হ্যাঁ, কিনব',
-        confirmButtonColor: '#4f46e5'
-    });
 
-    if (res.isConfirmed) {
-        showLoading();
-        try {
-            // ১. ব্যালেন্স ও স্পিন সংখ্যা আপডেট
-            await db.collection("users").doc(currentUserId).update({
-                mainBalance: firebase.firestore.FieldValue.increment(-price),
-                dailySpins: firebase.firestore.FieldValue.increment(count)
-            });
+    // ২. এবার ডেটা ইনজেকশন (এখন আর null এরর আসবে না)
+    document.getElementById('spinCheckoutUserName').innerText = currentUserData.name || "মেম্বার";
+    document.getElementById('spinCheckoutUserAvatar').src = currentUserData.avatar || "https://img.icons8.com/fluency/96/user-male-circle.png";
+    document.getElementById('spinCheckoutQty').innerText = count + " টি";
+    document.getElementById('spinCheckoutPrice').innerText = "৳" + price.toFixed(2);
+    document.getElementById('spinCheckoutUserBalance').innerText = "৳" + currentBalance.toFixed(2);
 
-            // ২. হিস্ট্রিতে রেকর্ড যোগ
-            await db.collection("history").add({
-                userId: currentUserId,
-                type: "স্পিন ক্রয় 🛒",
-                amount: -price,
-                status: "Success",
-                details: `${count}টি স্পিন প্যাকেজ কেনা হয়েছে`,
-                date: new Date().toLocaleDateString('bn-BD'),
-                time: new Date().toLocaleTimeString('bn-BD'),
-                timestamp: firebase.firestore.FieldValue.serverTimestamp()
-            });
+    const buyBtn = document.getElementById('spinConfirmBuyBtn');
+    const warningBox = document.getElementById('spinCheckoutWarningBox');
 
-            document.getElementById('spinCount').innerText = (parseInt(document.getElementById('spinCount').innerText) || 0) + count;
-            showSmartToast(`${count}টি স্পিন কেনা সফল হয়েছে! 🛍️`, 'success');
-            window.playSound('snd_success');
-        } catch (e) { console.log(e); }
+    if (currentBalance >= price) {
+        buyBtn.classList.remove('hidden');
+        warningBox.classList.add('hidden');
+    } else {
+        buyBtn.classList.add('hidden');
+        warningBox.classList.remove('hidden');
+    }
+
+    // ৩. স্লাইড-আপ এনিমেশন চালু
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+    window.playSound('snd_click');
+};
+
+window.closeSpinCheckout = function() {
+    const modal = document.getElementById('spinCheckoutModal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.style.display = 'none';
+    }
+};
+
+window.confirmSpinPurchase = async function() {
+    if (!window.currentSpinOrder) return;
+    const { count, price } = window.currentSpinOrder;
+
+    window.closeSpinCheckout();
+    showLoading('স্পিন প্যাক যোগ হচ্ছে...');
+
+    try {
+        const userRef = db.collection("users").doc(currentUserId);
+        await userRef.update({
+            mainBalance: firebase.firestore.FieldValue.increment(-price),
+            dailySpins: firebase.firestore.FieldValue.increment(count)
+        });
+
+        await db.collection("history").add({
+            userId: currentUserId,
+            type: "স্পিন ক্রয় 🛒",
+            amount: -price,
+            status: "Success",
+            details: `${count}টি স্পিন প্যাকেজ কেনা হয়েছে`,
+            date: new Date().toLocaleDateString('bn-BD'),
+            time: new Date().toLocaleTimeString('bn-BD'),
+            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        hideLoading();
+        window.trigger3DBoxReward(`${count} SPINS`);
+        if (typeof confetti === 'function') confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+        showSmartToast(`${count}টি স্পিন সফলভাবে কেনা হয়েছে! 🎰`, 'success');
+        window.playSound('snd_success');
+
+    } catch (e) {
+        console.error(e);
+        showSmartToast('প্যাকটি কিনতে সমস্যা হয়েছে', 'error');
         hideLoading();
     }
 };
@@ -14974,6 +15046,65 @@ window.togglePassword = (inputId, btn) => {
 
             <!-- 3. Dismiss Sheet Button -->
             <button onclick="window.closeLuckyDrawCheckout()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-3.5 rounded-2xl text-xs transition-all">
+                বাতিল করুন
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- 🎡 ULTRA PREMIUM SPIN PACK CHECKOUT MODAL -->
+<div id="spinCheckoutModal" class="hidden fixed inset-0 z-[999999] flex flex-col items-center justify-end transition-all duration-300">
+    <div class="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onclick="window.closeSpinCheckout()"></div>
+    
+    <div class="bg-white w-full max-w-md rounded-t-[35px] shadow-2xl p-6 relative z-10 animate__animated animate__slideInUp duration-300 overflow-hidden max-h-[90vh] overflow-y-auto">
+        <div class="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-5"></div>
+        
+        <div class="text-center mb-5">
+            <div class="w-16 h-16 bg-gradient-to-tr from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center text-white text-3xl mx-auto mb-2.5 shadow-lg border-2 border-white animate-spin-slow">
+                <i class="ri-refresh-line"></i>
+            </div>
+            <h3 class="text-xl font-black text-slate-800">স্পিন প্যাক ক্রয়</h3>
+            <p class="text-[11px] text-slate-400 font-bold tracking-wide mt-1 uppercase">Lucky Spin Bundle Pack</p>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-100 rounded-3xl p-5 space-y-3.5 mb-5 shadow-inner">
+            <div class="flex items-center gap-2.5 pb-3 border-b border-dashed border-slate-200">
+                <img id="spinCheckoutUserAvatar" src="https://img.icons8.com/fluency/96/user-male-circle.png" class="w-8 h-8 rounded-full border border-slate-200">
+                <p class="text-xs font-bold text-slate-600">ক্রেতা: <span id="spinCheckoutUserName" class="text-slate-800 font-black">---</span></p>
+            </div>
+
+            <div class="flex justify-between items-center text-xs">
+                <span class="text-slate-500 font-bold">স্পিন সংখ্যা</span>
+                <span id="spinCheckoutQty" class="font-black text-indigo-700 bg-indigo-100 px-2.5 py-0.5 rounded text-[10px]">-- টি</span>
+            </div>
+            <div class="flex justify-between items-center pt-3 border-t border-dashed border-slate-200">
+                <span class="text-slate-800 font-black text-sm">মূল্য (মেইন ব্যালেন্স)</span>
+                <span id="spinCheckoutPrice" class="font-black text-2xl text-indigo-600">৳০.০০</span>
+            </div>
+        </div>
+
+        <div class="bg-indigo-50/50 border border-indigo-100 p-4 rounded-2xl mb-5">
+            <div class="flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <div class="w-6 h-6 bg-indigo-500 text-white rounded-lg flex items-center justify-center text-sm shadow-sm"><i class="ri-wallet-3-fill"></i></div>
+                    <span class="text-xs font-bold text-slate-600">আপনার মেইন ব্যালেন্স</span>
+                </div>
+                <span id="spinCheckoutUserBalance" class="font-black text-slate-800 text-sm">৳০.০০</span>
+            </div>
+        </div>
+
+        <div id="spinCheckoutWarningBox" class="hidden bg-rose-50 border border-rose-100 p-3.5 rounded-2xl mb-5 flex items-start gap-2.5 animate__animated animate__shakeX">
+            <i class="ri-error-warning-fill text-rose-500 text-lg shrink-0 mt-0.5"></i>
+            <div class="text-left text-[11px] font-bold text-rose-700 leading-normal">
+                দুঃখিত মামা, আপনার ব্যালেন্স পর্যাপ্ত নয়! প্যাকটি কিনতে মেইন ব্যালেন্সে টাকা থাকতে হবে।
+            </div>
+        </div>
+
+        <div class="space-y-2">
+            <button id="spinConfirmBuyBtn" onclick="window.confirmSpinPurchase()" class="w-full bg-gradient-to-r from-indigo-600 to-purple-700 text-white font-black py-4 rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2 text-sm uppercase tracking-wider">
+                <i class="ri-checkbox-circle-fill text-lg"></i> এখনই কিনুন 🚀
+            </button>
+            <button onclick="window.closeSpinCheckout()" class="w-full bg-slate-100 hover:bg-slate-200 text-slate-500 font-bold py-3.5 rounded-2xl text-xs transition-all">
                 বাতিল করুন
             </button>
         </div>
