@@ -6463,11 +6463,14 @@ function renderTasks() {
                         }
 
                         if (shouldShow) {
+                            // 🔥 এই লাইনটি ভেরিয়েবল ডিফাইন করার জন্য যোগ করা হলো
+                            const taskTypeLower = (t.taskType || "daily").toLowerCase();
+
                             // 🔒 আজীবনের জন্য লক: ইউজার একবার করলেই চিরতরে হাইড
                             let isCompleted = (t.completedBy && Array.isArray(t.completedBy) && t.completedBy.includes(currentUserId));
 
-                            if (!isCompleted) {
-                                hasTask = true; 
+                            if (!isCompleted) {        
+                               hasTask = true; 
                                 
 // ✨ SMART ICON DETECTOR (FIXED FOR REDIRECT LINKS)
                                 let icon = 'ri-global-line', iconColor = 'from-slate-500 to-slate-700'; 
